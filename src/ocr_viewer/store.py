@@ -155,6 +155,8 @@ class JobEntry:
             "persisted_image": self.persisted_image,
             "crop": self.crop,
             "region_frame": list(self.region_frame) if self.region_frame else None,
+            "adjustments": self.view.get("adjustments"),
+            "resubmit_of": self.view.get("resubmit_of"),
             "region_count": result.get("region_count"),
             "finish_reason": result.get("finish_reason"),
             "truncated": result.get("truncated"),

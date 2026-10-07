@@ -262,53 +262,102 @@ ocr-viewer downloads/ /other/artifacts/ --port 8765 --open
 ocr-viewer downloads/ --server-url http://ocr-host:8080 --inbox ./ocr-submissions --port 8765 --open
 ```
 
-The **New OCR** tab (`#/new`) lets you send images to an inference server:
+A sidebar menu switches between **Jobs** (`#/jobs`, the artifact list), **New OCR** (`#/new`) and
+**Submissions** (`#/submissions`); the last two are shown only when submissions are enabled.
+
+**New OCR** – prepare and send images:
 
 * **Server URL** – prefilled from `--server-url` (or `OCR_SERVER_URL`), editable in the page (remembered in the
   browser's localStorage, *Reset* restores the default). *Check* calls `GET {url}/v1/info` through the viewer and
   shows the handler, pixel limit and queue state.
-* **Import images** – file picker or drag & drop; several images can be queued, each with its own box.
-* **Boxed region** – drag on the image to draw a box (in original pixel coordinates); only that region is sent
+* **Import images** – file picker or drag & drop; several images can be queued, each with its own adjustments and
+  box. Each image is uploaded once to the viewer (`POST /api/sources`) and previewed from there, so formats the
+  browser cannot display (e.g. TIFF) work too.
+* **Zoom & pan** – mouse wheel (at the cursor), `+`/`-`/`0` (fit)/`1` (1:1) or the toolbar buttons; pan with the
+  *Pan* tool, the middle mouse button, or by holding Space while dragging.
+* **Adjustments** – *Grayscale*, *Black & white* (threshold 0–255, pixels ≥ threshold become white, implies
+  grayscale) and *Rotation* in degrees clockwise with **0.1° steps** (number field, ±0.1° and ±90° buttons,
+  slider; normalized to (-180°, 180°]). The canvas expands to fit the rotated image and the corners are filled
+  white. The preview is rendered by the viewer backend with Pillow – the exact pixels that will be submitted – so
+  the box always matches what is sent. Changing the rotation clears the box.
+* **Boxed region** – drag on the image to draw a box (in pixels of the *adjusted* image); only that region is sent
   for OCR. *Clear box* sends the whole image. A warning is shown when the region exceeds the server's
   `max_pixels`; the viewer never downsamples – the server's 413 is shown as-is.
-* **Keep for viewing** – `original` (default): the full original image is kept and the OCR region is drawn as
-  a dashed frame on it; region images (`bbox_….jpg`) are cropped from the original at the right offset.
+* **Keep for viewing** – `original` (default): the full (adjusted, uncropped) image is kept and the OCR region is
+  drawn as a dashed frame on it; region images (`bbox_….jpg`) are cropped from it at the right offset.
   `cropped`: only the cropped image is kept (exactly what the model saw). Without a box both are the same.
 
-How it works: the browser uploads to the viewer backend (`POST /api/submissions`), which crops losslessly
-(PNG) with Pillow, POSTs to `{server}/v1/ocr`, and follows the job in the background (`GET /v1/jobs/{id}`;
-transient connection errors are retried with backoff). When the job finishes (succeeded or failed) the zip is
-downloaded, validated (all entries must be under `{job_id}/`) and extracted to `{inbox}/{job_id}/`; the inbox is
-also a viewer root, so the job appears in the job list. Pending submissions are stored in
-`{inbox}/.submissions/{job_id}.json` and resumed after a viewer restart.
+**Submissions** – a paged table (10/20/50/100 per page, newest first) of everything sent from this viewer, with a
+status filter (pending / succeeded / failed) and search (job id, file name, resubmitted job id). It refreshes
+every second while jobs are pending. For finished jobs (succeeded or failed):
+
+* **Open** – the result in the job view.
+* **Resubmit** – submits again with identical settings (same image, adjustments, box, prompt, server).
+* **Redraw** – reopens the image in *New OCR* with its adjustments, box, prompt and kept-image option prefilled, so
+  the box can be redrawn (or adjustments changed) before submitting. The job view has the same *Redraw &
+  resubmit* button, which also works for jobs that were not submitted through this viewer (their displayed image is
+  used as the source).
+
+New jobs reference the job they replace (`resubmit_of`); the old result is kept.
+
+How it works: imported images are stored in `{inbox}/.sources/{source_id}.{ext}` (+ `.json` metadata); sources
+never submitted are removed after 24 h, submitted ones are kept for redraw/resubmit. On submit the viewer
+backend applies the adjustments and crops losslessly (PNG; the original bytes are sent unchanged when there are
+no adjustments and no box), POSTs to `{server}/v1/ocr`, and follows the job in the background
+(`GET /v1/jobs/{id}`; transient connection errors are retried with backoff). When the job finishes (succeeded or
+failed) the zip is downloaded, validated (all entries must be under `{job_id}/`) and extracted to
+`{inbox}/{job_id}/`; the inbox is also a viewer root, so the job appears in the job list. Submission records
+are stored in `{inbox}/.submissions/{job_id}.json` and pending ones are resumed after a viewer restart. If the
+source of an old submission is gone, *Redraw*/*Resubmit* fall back to the image kept in the job folder.
 
 The viewer writes `viewer.json` into each imported job folder:
 
 ```json
 {
   "schema_version": 1, "source": "ocr-viewer", "server_url": "http://ocr-host:8080",
-  "submitted_at": "2025-01-01T00:00:00+00:00", "original_filename": "scan.png",
+  "submitted_at": "2025-01-01T00:00:00.000Z", "original_filename": "scan.png",
   "persisted_image": "original", "image": "original.png",
   "crop": {"box": [50, 55, 800, 1045], "source_width": 1000, "source_height": 1100},
-  "region_frame": [50, 55, 800, 1045]
+  "region_frame": [50, 55, 800, 1045],
+  "adjustments": {"rotation": 0.5, "grayscale": true, "threshold": null},
+  "source_id": "3f1c…", "resubmit_of": null
 }
 ```
 
-With `persisted_image: "original"` and a crop, `input.*` (the cropped upload) is replaced by `original.<ext>`;
-`job.json` from the server is left untouched and still describes the cropped input. `region_frame` is the
-offset/size used to map the model's 0–1000 coordinates (relative to the crop) onto the original image.
-`--inbox` defaults to `./ocr-submissions`; submission is disabled (404 `submissions_disabled`) when the app is
-created without an inbox.
+With `persisted_image: "original"` and a crop, `input.*` (the cropped upload) is replaced by `original.<ext>`
+(the adjusted full image); `job.json` from the server is left untouched and still describes the cropped input.
+`region_frame` is the offset/size used to map the model's 0–1000 coordinates (relative to the crop) onto the
+kept image. `adjustments` is `null` when none were applied. `--inbox` defaults to `./ocr-submissions`;
+submission is disabled (404 `submissions_disabled`) when the app is created without an inbox.
 
-Submission API (viewer): `GET /api/config`, `GET /api/server/info?url=`, `POST /api/submissions`
-(multipart: `image`, optional `server_url`, `prompt`, `box="x1,y1,x2,y2"` in original pixels,
-`persist=original|cropped`; → 202 with the submission record), `GET /api/submissions`,
-`GET /api/submissions/{job_id}`. Errors use the server's envelope (`{"error": {"code", "message", …}}`):
-viewer-side `invalid_image`, `empty_image`, `invalid_box`, `invalid_persist`, `server_url_required`,
-`invalid_server_url` (400), `file_too_large` (413), `server_unreachable` / `invalid_server_response` (502),
-`submission_not_found` (404); errors from the inference server keep their status
+Submission API (viewer):
+
+| Endpoint | Description |
+|---|---|
+| `GET /api/config` | `submissions_enabled`, default `server_url`, `inbox` |
+| `GET /api/server/info?url=` | proxied `GET {url}/v1/info` |
+| `POST /api/sources` | multipart `image` → 201 `{source_id, filename, format, ext, width, height, size, created_at}` |
+| `GET /api/sources/{id}` | source metadata |
+| `GET /api/sources/{id}/preview?rotation&grayscale&threshold` | adjusted preview (PNG; original bytes for browser formats without adjustments) |
+| `DELETE /api/sources/{id}` | `{deleted: bool}` – `false` when a submission still references it |
+| `POST /api/submissions` | multipart/form: `image` **or** `source_id`; optional `server_url`, `prompt`, `box="x1,y1,x2,y2"` (adjusted-image pixels; empty/`full` = whole image), `persist=original\|cropped` (default `cropped`), `rotation`, `grayscale`, `threshold`, `resubmit_of` → 202 submission record |
+| `GET /api/submissions?page&page_size&status&q` | `{items, total, page, page_size, pages}`; `status` = `pending\|succeeded\|failed` |
+| `GET /api/submissions/{job_id}` | submission record |
+| `POST /api/submissions/{job_id}/draft` | editor settings `{source, box, adjustments, persist, prompt, server_url, resubmit_of}` |
+| `POST /api/submissions/{job_id}/resubmit` | form overrides (`box` omitted = reuse, `full` = whole image; `server_url`, `prompt`, `persist`, `rotation`, `grayscale`, `threshold`) → 202 new record |
+| `POST /api/jobs/{key}/draft` | draft for any job folder |
+
+A submission record contains `job_id`, `server_url`, `state` (`submitted` → `imported` or `error`), `status`
+(`pending`/`succeeded`/`failed`), `job_status` (server status), `submitted_at`, `original_filename`,
+`submitted_filename`, `prompt`, `persist`, `crop`, `adjustments`, `source_id`, `resubmit_of`, `folder`, `key`
+(job-list key once imported), `error`, `last_error`.
+
+Errors use the server's envelope (`{"error": {"code", "message", …}}`): viewer-side `invalid_image`,
+`empty_image`, `invalid_box`, `invalid_persist`, `invalid_adjustment`, `invalid_status`, `invalid_resubmit_of`,
+`image_required`, `server_url_required`, `invalid_server_url` (400), `source_not_found`, `submission_not_found`
+(404), `submission_pending` (409, resubmitting an unfinished job), `source_unavailable` (409), `file_too_large`
+(413), `server_unreachable` / `invalid_server_response` (502); errors from the inference server keep their status
 (400/413/415/422/503, others → 502) and code, with `source: "inference_server"` and `Retry-After` when present.
-
 Viewer API: `GET /api/jobs?page&page_size&status&q`, `GET /api/jobs/{key}`, `GET /api/jobs/{key}/image`,
 `GET /api/jobs/{key}/images/{bbox_name}`, `POST /api/render`, `PUT|DELETE /api/jobs/{key}/markdown`,
 `GET /api/roots`.
@@ -332,7 +381,8 @@ response captured from the live server (`mock_vllm/fixtures`). Test hooks: promp
 * **e2e** – starts mock vLLM, the server and the viewer as real processes; `scripts/e2e_submit.py` submits
   jobs (including failure, oversized and invalid images), verifies the deflate zips and extracts them; Playwright
   tests drive the viewer (paging, side-by-side render, region crops, zoom/pan, edit/save/revert). A second viewer
-  (`--server-url` pointing at the real server) is driven through *New OCR*: custom server URL, image import,
-  boxed region with original vs. cropped image kept, whole-image submission. Screenshots,
+  (`--server-url` pointing at the real server) is driven through *New OCR* and *Submissions*: sidebar
+  navigation, custom server URL, zoom/pan, grayscale/B&W/0.1° rotation, boxed region with original vs. cropped
+  image kept, whole-image submission, status filter, resubmit and redraw of failed/succeeded jobs. Screenshots,
   logs and artifacts are uploaded as the `e2e-output` workflow artifact.
 * **build** – sdist/wheel (uploaded as `dist`), wheel install smoke test, Docker image build and smoke run.

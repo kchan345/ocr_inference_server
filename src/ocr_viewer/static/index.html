@@ -11,14 +11,13 @@
   <script defer src="/static/app.js"></script>
 </head>
 <body>
-<header class="topbar">
+<nav id="sidebar" class="sidebar" aria-label="Main menu">
   <a href="#/" class="brand">OCR Artifact Viewer</a>
-  <nav>
-    <a href="#/" id="nav-jobs">Jobs</a>
-    <a href="#/new" id="nav-new" hidden>New OCR</a>
-  </nav>
-  <span id="roots" class="muted"></span>
-</header>
+  <a href="#/" id="nav-jobs" class="nav-item">Jobs</a>
+  <a href="#/new" id="nav-new" class="nav-item" hidden>New OCR</a>
+  <a href="#/submissions" id="nav-submissions" class="nav-item" hidden>Submissions</a>
+  <div id="roots" class="sidebar-foot small"></div>
+</nav>
 
 <main>
   <section id="new-view" hidden>
@@ -37,6 +36,26 @@
           <input id="import-files" type="file" accept="image/*,.tif,.tiff" multiple hidden>
         </label>
         <ul id="import-list" class="import-list"></ul>
+        <fieldset id="adjust-panel" class="options" disabled>
+          <legend>Adjust selected image</legend>
+          <label><input type="checkbox" id="adj-grayscale"> Grayscale</label>
+          <label><input type="checkbox" id="adj-bw"> Black &amp; white · threshold
+            <output id="adj-threshold-value">128</output></label>
+          <input type="range" id="adj-threshold" min="0" max="255" step="1" value="128" disabled
+                 aria-label="Black and white threshold">
+          <label for="adj-rotation">Rotation (degrees, clockwise)</label>
+          <div class="rotate-row">
+            <button id="rot-left90" type="button" title="Rotate 90° counter-clockwise">⟲90</button>
+            <button id="rot-minus" type="button" title="Rotate −0.1°">−0.1</button>
+            <input id="adj-rotation" type="number" min="-180" max="180" step="0.1" value="0">
+            <button id="rot-plus" type="button" title="Rotate +0.1°">+0.1</button>
+            <button id="rot-right90" type="button" title="Rotate 90° clockwise">90⟳</button>
+          </div>
+          <input type="range" id="adj-rotation-slider" min="-180" max="180" step="0.1" value="0"
+                 aria-label="Rotation">
+          <button id="adj-reset" type="button">Reset adjustments</button>
+          <p class="muted small">Applied before cropping; draw the box on the adjusted image.</p>
+        </fieldset>
         <fieldset class="options">
           <legend>Keep for viewing results</legend>
           <label><input type="radio" name="persist" id="persist-original" value="original" checked>
@@ -54,29 +73,78 @@
       <div class="crop-pane">
         <div class="pane-toolbar">
           <strong id="crop-name">No image selected</strong>
+          <span id="crop-resubmit" class="badge edited" hidden></span>
+          <span class="spacer"></span>
+          <div class="seg" role="group" aria-label="Mouse tool">
+            <button id="tool-box" type="button" class="active" title="Drag to draw the OCR box">Draw box</button>
+            <button id="tool-pan" type="button" title="Drag to pan">Pan</button>
+          </div>
           <button id="crop-clear" type="button" disabled>Clear box</button>
-          <span id="crop-info" class="muted"></span>
-          <span class="muted hint">Drag on the image to define the OCR region</span>
+          <button id="crop-zoom-out" type="button" title="Zoom out (-)">−</button>
+          <span id="crop-zoom-level" class="zoom-level">100%</span>
+          <button id="crop-zoom-in" type="button" title="Zoom in (+)">+</button>
+          <button id="crop-zoom-fit" type="button" title="Fit (0)">Fit</button>
+          <button id="crop-zoom-actual" type="button" title="Actual size (1)">1:1</button>
         </div>
-        <div class="crop-area">
-          <div id="crop-stage" class="crop-stage" hidden>
+        <div class="pane-toolbar">
+          <span id="crop-info" class="muted"></span>
+          <span class="muted hint">Wheel to zoom · Pan tool, middle-drag or Space+drag to pan</span>
+        </div>
+        <p id="crop-warning" class="message warn" hidden></p>
+        <div id="crop-viewport" class="viewport crop-viewport" tabindex="0">
+          <div id="crop-stage" class="stage" hidden>
             <img id="crop-image" alt="Image to OCR" draggable="false">
             <div id="crop-box" class="crop-box" hidden></div>
           </div>
-          <p id="crop-warning" class="message warn" hidden></p>
+          <p id="crop-empty" class="viewport-empty muted">Import an image to start</p>
+          <p id="crop-loading" class="viewport-loading" hidden>Rendering…</p>
         </div>
       </div>
     </div>
-    <div class="submissions">
-      <div class="pane-toolbar"><strong>Submissions</strong><span id="inbox-info" class="muted"></span></div>
-      <table class="jobs">
-        <thead>
-        <tr><th>Submitted</th><th>File</th><th>Job</th><th>Region</th><th>Kept image</th><th>Status</th><th></th></tr>
-        </thead>
-        <tbody id="submission-rows"></tbody>
-      </table>
+  </section>
+
+  <section id="submissions-view" hidden>
+    <div class="toolbar">
+      <label>Status
+        <select id="sub-status">
+          <option value="">All</option>
+          <option value="pending">pending</option>
+          <option value="succeeded">succeeded</option>
+          <option value="failed">failed</option>
+        </select>
+      </label>
+      <label>Search <input id="sub-search" type="search" placeholder="job id or file name"></label>
+      <label>Per page
+        <select id="sub-page-size">
+          <option value="10">10</option>
+          <option value="20" selected>20</option>
+          <option value="50">50</option>
+          <option value="100">100</option>
+        </select>
+      </label>
+      <button id="sub-refresh" type="button">Refresh</button>
+      <span class="spacer"></span>
+      <span id="inbox-info" class="muted small"></span>
+      <span id="sub-total" class="muted"></span>
+    </div>
+    <div id="sub-messages"></div>
+    <table class="jobs">
+      <thead>
+      <tr><th>Submitted</th><th>File</th><th>Job</th><th>Region</th><th>Adjustments</th><th>Kept image</th>
+        <th>Status</th><th>Actions</th></tr>
+      </thead>
+      <tbody id="submission-rows"></tbody>
+    </table>
+    <p id="sub-empty" class="muted empty" hidden>No submissions. Use <a href="#/new">New OCR</a> to submit images.</p>
+    <div class="pager">
+      <button id="sub-first" type="button">« First</button>
+      <button id="sub-prev" type="button">‹ Prev</button>
+      <span id="sub-page-info"></span>
+      <button id="sub-next" type="button">Next ›</button>
+      <button id="sub-last" type="button">Last »</button>
     </div>
   </section>
+
   <section id="list-view" hidden>
     <div class="toolbar">
       <label>Status
@@ -107,7 +175,7 @@
       </thead>
       <tbody id="job-rows"></tbody>
     </table>
-    <p id="empty-list" class="muted" hidden>No OCR jobs found in the given artifact folders.</p>
+    <p id="empty-list" class="muted empty" hidden>No OCR jobs found in the given artifact folders.</p>
     <div class="pager">
       <button id="first-page" type="button">« First</button>
       <button id="prev-page" type="button">‹ Prev</button>
@@ -126,6 +194,7 @@
       <span id="job-status" class="badge"></span>
       <span id="job-file" class="muted"></span>
       <span class="spacer"></span>
+      <button id="job-resubmit" type="button" hidden title="Open this job's image in New OCR">Redraw &amp; resubmit</button>
       <div class="seg" role="group" aria-label="Text panel mode">
         <button id="mode-render" type="button" class="active">Rendered</button>
         <button id="mode-edit" type="button">Edit</button>
@@ -138,7 +207,7 @@
       <div class="pane image-pane">
         <div class="pane-toolbar">
           <button id="zoom-out" type="button" title="Zoom out (-)">−</button>
-          <span id="zoom-level">100%</span>
+          <span id="zoom-level" class="zoom-level">100%</span>
           <button id="zoom-in" type="button" title="Zoom in (+)">+</button>
           <button id="zoom-fit" type="button" title="Fit (0)">Fit</button>
           <button id="zoom-actual" type="button" title="Actual size (1)">1:1</button>
