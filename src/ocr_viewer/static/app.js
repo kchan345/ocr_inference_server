@@ -734,6 +734,7 @@
     $("crop-stage").style.height = item.natH + "px";
     $("crop-stage").hidden = false;
     sub.shownId = item.id;
+    updateCropInfo(); // may change the toolbar height, so before fitting
     if (refit) cropZoom.fit();
   }
 

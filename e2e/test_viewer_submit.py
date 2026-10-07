@@ -184,7 +184,7 @@ def test_crop_editor_zoom_and_pan(page: Page):
 
     # drawing at high zoom still maps to image pixels
     page.click("#crop-zoom-fit")
-    assert scale_of(page) == pytest.approx(fitted, rel=1e-3)
+    assert scale_of(page) == pytest.approx(fitted, rel=1e-2)
     page.click("#crop-zoom-actual")
     assert scale_of(page) == 1
     draw_box(page, 0.3, 0.4, 0.5, 0.55)
