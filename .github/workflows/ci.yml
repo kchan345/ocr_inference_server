@@ -31,6 +31,7 @@ jobs:
       - name: Lint
         run: ruff check .
       - name: Tests
+        if: success() || failure()
         run: pytest -q -ra
 
   e2e:

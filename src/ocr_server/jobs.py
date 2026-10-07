@@ -178,6 +178,10 @@ def _redact_payload(payload: dict[str, Any], input_name: str) -> dict[str, Any]:
     return redacted
 
 
+def _encode_json(payload: dict[str, Any]) -> bytes:
+    return json.dumps(payload).encode("utf-8")
+
+
 def _data_url(data: bytes, mime: str) -> str:
     return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
 
@@ -362,8 +366,9 @@ class JobRunner:
         data = await asyncio.to_thread(self.store.read_bytes, job_id, inp["filename"])
         image_url = await asyncio.to_thread(_data_url, data, inp["mime"])
         payload = self.handler.build_payload(model=self.model, image_url=image_url, prompt=meta.get("prompt"))
-        await asyncio.to_thread(self.store.write_json, job_id, "request.json", _redact_payload(payload, inp["filename"]))
-        body_bytes = await asyncio.to_thread(lambda: json.dumps(payload).encode("utf-8"))
+        redacted = _redact_payload(payload, inp["filename"])
+        await asyncio.to_thread(self.store.write_json, job_id, "request.json", redacted)
+        body_bytes = await asyncio.to_thread(_encode_json, payload)
         del image_url, payload
 
         try:

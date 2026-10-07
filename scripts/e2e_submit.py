@@ -75,7 +75,8 @@ def main() -> int:
             meta = wait(client, job_id, timeout=120, interval=0.5)
             expected = "failed" if kind == "fail" else "succeeded"
             check(meta["status"] == expected, f"{job_id} ({kind}) finished as {meta['status']}")
-            check(bool(meta.get("batch")), f"{job_id} dispatched in batch {meta['batch'] and meta['batch']['batch_id']}")
+            batch_id = meta["batch"] and meta["batch"]["batch_id"]
+            check(bool(meta.get("batch")), f"{job_id} dispatched in batch {batch_id}")
             zip_path = download(client, job_id, args.out)
             with zipfile.ZipFile(zip_path) as zf:
                 infos = zf.infolist()
@@ -84,7 +85,8 @@ def main() -> int:
                 input_name = f"{job_id}/{meta['input']['filename']}"
                 check(input_name in names, f"{zip_path.name} contains the original input image")
                 if kind == "sample":
-                    check(hashlib.sha256(zf.read(input_name)).hexdigest() == sample_sha, "input image is byte-identical")
+                    digest = hashlib.sha256(zf.read(input_name)).hexdigest()
+                    check(digest == sample_sha, "input image is byte-identical")
                 if expected == "succeeded":
                     check("Quarterly Sales Report" in zf.read(f"{job_id}/result.md").decode(), "result.md has OCR text")
             extract(zip_path, args.extract_to)

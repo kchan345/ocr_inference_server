@@ -53,7 +53,9 @@ async def _read_limited(upload: UploadFile, limit: int) -> bytes:
     return bytes(buf)
 
 
-def create_app(settings: Settings | None = None, *, backend_transport: httpx.AsyncBaseTransport | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None, *, backend_transport: httpx.AsyncBaseTransport | None = None
+) -> FastAPI:
     settings = settings or Settings.from_env()
     handler_options: dict[str, Any] = {}
     if settings.max_tokens:
@@ -75,7 +77,9 @@ def create_app(settings: Settings | None = None, *, backend_transport: httpx.Asy
         if recovered:
             log.warning("Marked %d interrupted job(s) as failed", len(recovered))
         headers = {"Authorization": f"Bearer {settings.backend_api_key}"} if settings.backend_api_key else {}
-        limits = httpx.Limits(max_connections=settings.max_concurrency, max_keepalive_connections=settings.max_concurrency)
+        limits = httpx.Limits(
+            max_connections=settings.max_concurrency, max_keepalive_connections=settings.max_concurrency
+        )
         async with httpx.AsyncClient(
             base_url=settings.backend_url.rstrip("/") + "/",
             timeout=httpx.Timeout(settings.request_timeout, connect=10.0),
