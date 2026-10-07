@@ -1,0 +1,122 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Unit & integration tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install
+        run: pip install -e ".[test]"
+      - name: Lint
+        run: ruff check .
+      - name: Tests
+        run: pytest -q -ra
+
+  e2e:
+    name: End-to-end (mock vLLM + server + viewer UI)
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: |
+          pip install -e ".[e2e]"
+          python -m playwright install --with-deps chromium
+      - name: Start mock vLLM endpoint
+        env:
+          MOCK_DELAY_SECONDS: "1"
+        run: |
+          mkdir -p e2e-out/logs
+          nohup uvicorn mock_vllm.app:app --host 127.0.0.1 --port 8000 > e2e-out/logs/mock.log 2>&1 &
+          curl -sf --retry 30 --retry-delay 1 --retry-connrefused http://127.0.0.1:8000/v1/models
+      - name: Start inference server
+        env:
+          OCR_BACKEND_URL: http://127.0.0.1:8000/v1
+          OCR_ARTIFACT_DIR: e2e-out/server-artifacts
+          OCR_BATCH_WINDOW_SECONDS: "2"
+        run: |
+          nohup ocr-server --host 127.0.0.1 --port 8080 > e2e-out/logs/server.log 2>&1 &
+          curl -sf --retry 30 --retry-delay 1 --retry-connrefused http://127.0.0.1:8080/healthz
+          curl -sf http://127.0.0.1:8080/v1/info | python -m json.tool
+      - name: Submit OCR jobs and verify artifacts
+        run: >
+          python scripts/e2e_submit.py --server http://127.0.0.1:8080 --image tests/fixtures/sample.png
+          --out e2e-out/downloads --extract-to e2e-out/viewer-artifacts
+      - name: Start viewer on downloaded artifacts
+        run: |
+          nohup ocr-viewer e2e-out/viewer-artifacts --host 127.0.0.1 --port 8765 > e2e-out/logs/viewer.log 2>&1 &
+          curl -sf --retry 30 --retry-delay 1 --retry-connrefused "http://127.0.0.1:8765/api/jobs" | python -m json.tool
+      - name: Viewer UI tests (Playwright)
+        env:
+          VIEWER_URL: http://127.0.0.1:8765
+          E2E_EXPECTED_JOBS: "5"
+          E2E_SCREENSHOTS: e2e-out/screenshots
+        run: pytest e2e -v --browser chromium --tracing retain-on-failure --output e2e-out/playwright
+      - name: Upload e2e outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-output
+          path: e2e-out/
+          if-no-files-found: warn
+
+  build:
+    name: Build packages & container
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build sdist and wheel
+        run: |
+          pip install build
+          python -m build
+          python -m zipfile -l dist/*.whl | grep -E "ocr_viewer/static/(index.html|app.js|style.css)"
+      - name: Smoke-test wheel install
+        run: |
+          python -m venv /tmp/wheel-venv
+          /tmp/wheel-venv/bin/pip install "$(ls dist/*.whl)[viewer]"
+          /tmp/wheel-venv/bin/ocr-server --help
+          /tmp/wheel-venv/bin/ocr-viewer --help
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Build container image
+        run: docker build -t ocr-inference-server:ci .
+      - name: Smoke-test container
+        run: |
+          docker run --rm ocr-inference-server:ci ocr-server --help
+          docker run -d --name ocr -p 18080:8080 -e OCR_BACKEND_URL=http://127.0.0.1:9/v1 ocr-inference-server:ci
+          curl -sf --retry 20 --retry-delay 1 --retry-all-errors http://127.0.0.1:18080/healthz
+          docker logs ocr
+          docker rm -f ocr

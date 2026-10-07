@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ocr-inference-server"
+version = "0.1.0"
+description = "Async OCR inference server in front of an OpenAI-compatible (vLLM) endpoint, plus a local artifact viewer."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "httpx>=0.27",
+    "pillow>=10.3",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+viewer = [
+    "markdown-it-py>=3.0",
+    "mdit-py-plugins>=0.4",
+    "nh3>=0.2.17",
+]
+test = [
+    "ocr-inference-server[viewer]",
+    "pytest>=8.0",
+    "ruff>=0.5",
+]
+e2e = [
+    "ocr-inference-server[viewer]",
+    "pytest>=8.0",
+    "pytest-playwright>=0.5",
+]
+
+[project.scripts]
+ocr-server = "ocr_server.__main__:main"
+ocr-viewer = "ocr_viewer.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ocr_server", "src/ocr_viewer"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "mock_vllm", "scripts", "e2e", "README.md", "Dockerfile"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]

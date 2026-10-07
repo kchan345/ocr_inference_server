@@ -1,0 +1,40 @@
+{
+  "id": "chatcmpl-a7cfd25b9fa5288b",
+  "object": "chat.completion",
+  "created": 1791399655,
+  "model": "ATH-MaaS/OvisOCR2",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Quarterly Sales Report\n\n### 1. Summary\n\nRevenue grew steadily across all regions during Q3 2026.\n\nThe table below lists sales figures in thousands of USD.\n\n- North region exceeded its target.\n\n- South region remained flat.\n\n<table border=\"1\"><tr><td>Region</td><td>Q2</td><td>Q3</td><td>Change</td></tr><tr><td>North</td><td>120</td><td>150</td><td>+25%</td></tr><tr><td>South</td><td>98</td><td>99</td><td>+1%</td></tr><tr><td>West</td><td>75</td><td>90</td><td>+20%</td></tr></table>\n\nGrowth rate: g = (S_Q3 - S_Q2) / S_Q2 x 100%\n\nFigure 1: Q3 sales by region\n\n<img src=\"images/bbox_94_592_715_935.jpg\" />",
+        "refusal": null,
+        "annotations": null,
+        "audio": null,
+        "function_call": null,
+        "reasoning": null
+      },
+      "logprobs": null,
+      "finish_reason": "stop",
+      "stop_reason": null,
+      "token_ids": null,
+      "routed_experts": null
+    }
+  ],
+  "service_tier": null,
+  "system_fingerprint": "vllm-0.28.0+strix-0a04cef8",
+  "usage": {
+    "prompt_tokens": 1181,
+    "total_tokens": 1428,
+    "completion_tokens": 247,
+    "prompt_tokens_details": null,
+    "completion_tokens_details": null
+  },
+  "prompt_logprobs": null,
+  "prompt_token_ids": null,
+  "prompt_text": null,
+  "kv_transfer_params": null,
+  "ec_transfer_params": null,
+  "metrics": null
+}

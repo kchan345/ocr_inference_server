@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OCR Artifact Viewer</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <!-- Optional: KaTeX for formula rendering. Without network access formulas are shown as LaTeX source. -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" crossorigin="anonymous">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" crossorigin="anonymous"></script>
+  <script defer src="/static/app.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <a href="#/" class="brand">OCR Artifact Viewer</a>
+  <span id="roots" class="muted"></span>
+</header>
+
+<main>
+  <section id="list-view" hidden>
+    <div class="toolbar">
+      <label>Status
+        <select id="status-filter">
+          <option value="">All</option>
+          <option value="succeeded">succeeded</option>
+          <option value="failed">failed</option>
+          <option value="queued">queued</option>
+          <option value="running">running</option>
+        </select>
+      </label>
+      <label>Search <input id="search" type="search" placeholder="job id, file name or text"></label>
+      <label>Per page
+        <select id="page-size">
+          <option value="10">10</option>
+          <option value="20" selected>20</option>
+          <option value="50">50</option>
+          <option value="100">100</option>
+        </select>
+      </label>
+      <button id="refresh" type="button">Refresh</button>
+      <span class="spacer"></span>
+      <span id="total-info" class="muted"></span>
+    </div>
+    <table class="jobs">
+      <thead>
+      <tr><th>Job</th><th>Status</th><th>Created</th><th>Input</th><th>Size</th><th>Regions</th><th>Preview</th></tr>
+      </thead>
+      <tbody id="job-rows"></tbody>
+    </table>
+    <p id="empty-list" class="muted" hidden>No OCR jobs found in the given artifact folders.</p>
+    <div class="pager">
+      <button id="first-page" type="button">« First</button>
+      <button id="prev-page" type="button">‹ Prev</button>
+      <span id="page-info"></span>
+      <button id="next-page" type="button">Next ›</button>
+      <button id="last-page" type="button">Last »</button>
+    </div>
+  </section>
+
+  <section id="job-view" hidden>
+    <div class="toolbar">
+      <a href="#/" id="back-link">← Jobs</a>
+      <button id="prev-job" type="button" title="Previous job">‹</button>
+      <button id="next-job" type="button" title="Next job">›</button>
+      <strong id="job-title"></strong>
+      <span id="job-status" class="badge"></span>
+      <span id="job-file" class="muted"></span>
+      <span class="spacer"></span>
+      <div class="seg" role="group" aria-label="Text panel mode">
+        <button id="mode-render" type="button" class="active">Rendered</button>
+        <button id="mode-edit" type="button">Edit</button>
+      </div>
+      <button id="save-md" type="button" disabled>Save</button>
+      <button id="revert-md" type="button">Revert to original</button>
+      <span id="save-state" class="muted"></span>
+    </div>
+    <div class="split">
+      <div class="pane image-pane">
+        <div class="pane-toolbar">
+          <button id="zoom-out" type="button" title="Zoom out (-)">−</button>
+          <span id="zoom-level">100%</span>
+          <button id="zoom-in" type="button" title="Zoom in (+)">+</button>
+          <button id="zoom-fit" type="button" title="Fit (0)">Fit</button>
+          <button id="zoom-actual" type="button" title="Actual size (1)">1:1</button>
+          <label><input type="checkbox" id="show-regions" checked> Regions</label>
+          <span class="muted hint">Wheel to zoom · drag to pan</span>
+        </div>
+        <div id="viewport" class="viewport" tabindex="0">
+          <div id="stage" class="stage">
+            <img id="page-image" alt="Original input image" draggable="false">
+            <div id="overlay" class="overlay"></div>
+          </div>
+        </div>
+      </div>
+      <div class="pane text-pane">
+        <div id="job-messages"></div>
+        <article id="rendered" class="markdown-body"></article>
+        <textarea id="editor" spellcheck="false" hidden></textarea>
+      </div>
+    </div>
+  </section>
+</main>
+</body>
+</html>
