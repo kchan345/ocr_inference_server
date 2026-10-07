@@ -72,11 +72,18 @@ jobs:
           --out e2e-out/downloads --extract-to e2e-out/viewer-artifacts
       - name: Start viewer on downloaded artifacts
         run: |
-          nohup ocr-viewer e2e-out/viewer-artifacts --host 127.0.0.1 --port 8765 > e2e-out/logs/viewer.log 2>&1 &
+          nohup ocr-viewer e2e-out/viewer-artifacts --inbox e2e-out/viewer1-inbox --host 127.0.0.1 --port 8765 \
+            > e2e-out/logs/viewer.log 2>&1 &
           curl -sf --retry 30 --retry-delay 1 --retry-connrefused "http://127.0.0.1:8765/api/jobs" | python -m json.tool
+      - name: Start submitting viewer (imports images, sends them to the inference server)
+        run: |
+          nohup ocr-viewer --inbox e2e-out/viewer-inbox --server-url http://127.0.0.1:8080 --poll-interval 0.5 \
+            --host 127.0.0.1 --port 8766 > e2e-out/logs/viewer-submit.log 2>&1 &
+          curl -sf --retry 30 --retry-delay 1 --retry-connrefused "http://127.0.0.1:8766/api/config" | python -m json.tool
       - name: Viewer UI tests (Playwright)
         env:
           VIEWER_URL: http://127.0.0.1:8765
+          SUBMIT_VIEWER_URL: http://127.0.0.1:8766
           E2E_EXPECTED_JOBS: "5"
           E2E_SCREENSHOTS: e2e-out/screenshots
         run: pytest e2e -v --browser chromium --tracing retain-on-failure --output e2e-out/playwright

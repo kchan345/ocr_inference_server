@@ -64,10 +64,18 @@ def box_to_pixels(box: tuple[int, int, int, int], width: int, height: int, scale
 
 
 @lru_cache(maxsize=256)
-def _crop_cached(path: str, mtime_ns: int, box: tuple[int, int, int, int], scale: int, fmt: str) -> bytes | None:
+def _crop_cached(
+    path: str, mtime_ns: int, box: tuple[int, int, int, int], scale: int, fmt: str,
+    frame: tuple[int, int, int, int] | None,
+) -> bytes | None:
     with Image.open(path) as img:
         img.load()
-        x1, y1, x2, y2 = box_to_pixels(box, img.width, img.height, scale)
+        fx1, fy1, fx2, fy2 = 0, 0, img.width, img.height
+        if frame is not None:
+            fx1, fx2 = (max(0, min(img.width, v)) for v in (frame[0], frame[2]))
+            fy1, fy2 = (max(0, min(img.height, v)) for v in (frame[1], frame[3]))
+        x1, y1, x2, y2 = box_to_pixels(box, fx2 - fx1, fy2 - fy1, scale)
+        x1, x2, y1, y2 = x1 + fx1, x2 + fx1, y1 + fy1, y2 + fy1
         if x2 <= x1 or y2 <= y1:
             return None
         crop = img.crop((x1, y1, x2, y2))
@@ -79,6 +87,13 @@ def _crop_cached(path: str, mtime_ns: int, box: tuple[int, int, int, int], scale
         return out.getvalue()
 
 
-def crop_region(image_path: Path, box: tuple[int, int, int, int], scale: int, fmt: str) -> bytes | None:
-    """Crop a normalized region out of the original page image; ``None`` if the region is empty."""
-    return _crop_cached(str(image_path), image_path.stat().st_mtime_ns, box, scale, fmt)
+def crop_region(
+    image_path: Path, box: tuple[int, int, int, int], scale: int, fmt: str,
+    frame: tuple[int, int, int, int] | None = None,
+) -> bytes | None:
+    """Crop a normalized region out of the page image; ``None`` if the region is empty.
+
+    ``frame`` is the pixel box (inside the image) that the normalized coordinates refer to, used when the
+    OCR ran on a crop of the persisted original image.
+    """
+    return _crop_cached(str(image_path), image_path.stat().st_mtime_ns, box, scale, fmt, frame)

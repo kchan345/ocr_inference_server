@@ -13,10 +13,70 @@
 <body>
 <header class="topbar">
   <a href="#/" class="brand">OCR Artifact Viewer</a>
+  <nav>
+    <a href="#/" id="nav-jobs">Jobs</a>
+    <a href="#/new" id="nav-new" hidden>New OCR</a>
+  </nav>
   <span id="roots" class="muted"></span>
 </header>
 
 <main>
+  <section id="new-view" hidden>
+    <div class="toolbar">
+      <label for="server-url">Inference server</label>
+      <input id="server-url" type="url" size="40" placeholder="http://localhost:8080">
+      <button id="server-check" type="button">Check</button>
+      <button id="server-reset" type="button" title="Use the viewer's configured default">Default</button>
+      <span id="server-status" class="muted"></span>
+    </div>
+    <div class="new-layout">
+      <aside class="import-pane">
+        <label id="drop-zone" class="drop-zone" for="import-files">
+          <strong>Import images</strong><br>
+          <span class="muted">Click to choose or drop files here</span>
+          <input id="import-files" type="file" accept="image/*,.tif,.tiff" multiple hidden>
+        </label>
+        <ul id="import-list" class="import-list"></ul>
+        <fieldset class="options">
+          <legend>Keep for viewing results</legend>
+          <label><input type="radio" name="persist" id="persist-original" value="original" checked>
+            Original image (before cropping)</label>
+          <label><input type="radio" name="persist" id="persist-cropped" value="cropped">
+            Cropped image (what was sent for OCR)</label>
+          <p class="muted small">Only applies to images with a box.</p>
+        </fieldset>
+        <label class="options">Prompt (optional)
+          <textarea id="ocr-prompt" rows="3" placeholder="Leave empty for the server's default OCR prompt"></textarea>
+        </label>
+        <button id="submit-ocr" type="button" class="primary" disabled>Submit for OCR</button>
+        <div id="submit-messages"></div>
+      </aside>
+      <div class="crop-pane">
+        <div class="pane-toolbar">
+          <strong id="crop-name">No image selected</strong>
+          <button id="crop-clear" type="button" disabled>Clear box</button>
+          <span id="crop-info" class="muted"></span>
+          <span class="muted hint">Drag on the image to define the OCR region</span>
+        </div>
+        <div class="crop-area">
+          <div id="crop-stage" class="crop-stage" hidden>
+            <img id="crop-image" alt="Image to OCR" draggable="false">
+            <div id="crop-box" class="crop-box" hidden></div>
+          </div>
+          <p id="crop-warning" class="message warn" hidden></p>
+        </div>
+      </div>
+    </div>
+    <div class="submissions">
+      <div class="pane-toolbar"><strong>Submissions</strong><span id="inbox-info" class="muted"></span></div>
+      <table class="jobs">
+        <thead>
+        <tr><th>Submitted</th><th>File</th><th>Job</th><th>Region</th><th>Kept image</th><th>Status</th><th></th></tr>
+        </thead>
+        <tbody id="submission-rows"></tbody>
+      </table>
+    </div>
+  </section>
   <section id="list-view" hidden>
     <div class="toolbar">
       <label>Status

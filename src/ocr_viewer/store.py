@@ -6,7 +6,7 @@ import json
 import math
 import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +14,7 @@ JOB_FILE = "job.json"
 RESULT_FILE = "result.md"
 TEXT_RESULT_FILE = "result_text.md"
 EDITED_FILE = "result.edited.md"
+VIEW_FILE = "viewer.json"
 DEFAULT_BBOX_SCALE = 1000
 _KEY_UNSAFE = re.compile(r"[^A-Za-z0-9_.-]+")
 
@@ -59,6 +60,8 @@ class JobEntry:
     path: Path
     meta: dict[str, Any]
     snippet: str
+    view: dict[str, Any] = field(default_factory=dict)
+    """Contents of ``viewer.json`` for jobs submitted through the viewer (persisted image, crop)."""
 
     @property
     def job_id(self) -> str:
@@ -84,15 +87,40 @@ class JobEntry:
         return int(scale) if isinstance(scale, int) and scale > 0 else DEFAULT_BBOX_SCALE
 
     def input_path(self) -> Path | None:
-        name = self.input_meta.get("filename")
-        if isinstance(name, str) and name and Path(name).name == name:
-            candidate = self.path / name
-            if candidate.is_file():
-                return candidate
+        candidates = [self.view.get("image"), self.input_meta.get("filename")]
+        for name in candidates:
+            if isinstance(name, str) and name and Path(name).name == name:
+                candidate = self.path / name
+                if candidate.is_file():
+                    return candidate
         for candidate in sorted(self.path.glob("input.*")):
             if candidate.is_file():
                 return candidate
         return None
+
+    @property
+    def crop(self) -> dict[str, Any] | None:
+        crop = self.view.get("crop")
+        return crop if isinstance(crop, dict) else None
+
+    @property
+    def region_frame(self) -> tuple[int, int, int, int] | None:
+        """Pixel box inside the displayed image that region coordinates are relative to (None = whole image)."""
+        frame = self.view.get("region_frame")
+        if isinstance(frame, list) and len(frame) == 4 and all(isinstance(v, int) for v in frame):
+            return frame[0], frame[1], frame[2], frame[3]
+        return None
+
+    @property
+    def persisted_image(self) -> str:
+        return str(self.view.get("persisted_image") or "original")
+
+    def image_size(self) -> tuple[Any, Any]:
+        """Size of the image shown by the viewer."""
+        crop = self.crop
+        if self.region_frame and crop:
+            return crop.get("source_width"), crop.get("source_height")
+        return self.input_meta.get("width"), self.input_meta.get("height")
 
     @property
     def edited_path(self) -> Path:
@@ -114,15 +142,19 @@ class JobEntry:
         result = self.meta.get("result") if isinstance(self.meta.get("result"), dict) else {}
         error = self.meta.get("error") if isinstance(self.meta.get("error"), dict) else None
         inp = self.input_meta
+        width, height = self.image_size()
         return {
             "key": self.key,
             "job_id": self.job_id,
             "status": self.status,
             "created_at": self.meta.get("created_at"),
             "finished_at": self.meta.get("finished_at"),
-            "original_filename": inp.get("original_filename"),
-            "width": inp.get("width"),
-            "height": inp.get("height"),
+            "original_filename": self.view.get("original_filename") or inp.get("original_filename"),
+            "width": width,
+            "height": height,
+            "persisted_image": self.persisted_image,
+            "crop": self.crop,
+            "region_frame": list(self.region_frame) if self.region_frame else None,
             "region_count": result.get("region_count"),
             "finish_reason": result.get("finish_reason"),
             "truncated": result.get("truncated"),
@@ -139,11 +171,11 @@ class ArtifactLibrary:
     def __init__(self, roots: list[Path], max_depth: int = 3) -> None:
         self.roots = [Path(r).resolve() for r in roots]
         self.max_depth = max_depth
-        self._cache: dict[Path, tuple[int, dict[str, Any], str]] = {}
+        self._cache: dict[Path, tuple[int, dict[str, Any], str, dict[str, Any]]] = {}
         self._by_key: dict[str, JobEntry] = {}
         self._lock = threading.Lock()
 
-    def _load(self, job_dir: Path) -> tuple[dict[str, Any], str] | None:
+    def _load(self, job_dir: Path) -> tuple[dict[str, Any], str, dict[str, Any]] | None:
         job_file = job_dir / JOB_FILE
         try:
             mtime = job_file.stat().st_mtime_ns
@@ -151,16 +183,23 @@ class ArtifactLibrary:
             return None
         cached = self._cache.get(job_dir)
         if cached and cached[0] == mtime:
-            return cached[1], cached[2]
+            return cached[1], cached[2], cached[3]
         try:
             meta = json.loads(job_file.read_text("utf-8"))
         except (OSError, ValueError):
             return None
         if not isinstance(meta, dict):
             return None
+        view: Any = {}
+        if (job_dir / VIEW_FILE).is_file():
+            try:
+                view = json.loads((job_dir / VIEW_FILE).read_text("utf-8"))
+            except (OSError, ValueError):
+                view = {}
+        view = view if isinstance(view, dict) else {}
         snippet = _snippet(job_dir)
-        self._cache[job_dir] = (mtime, meta, snippet)
-        return meta, snippet
+        self._cache[job_dir] = (mtime, meta, snippet, view)
+        return meta, snippet, view
 
     def scan(self) -> list[JobEntry]:
         with self._lock:
@@ -178,13 +217,13 @@ class ArtifactLibrary:
                 loaded = self._load(job_dir)
                 if loaded is None:
                     continue
-                meta, snippet = loaded
+                meta, snippet, view = loaded
                 base = _safe_key(str(meta.get("job_id") or job_dir.name))
                 key, n = base, 2
                 while key in used:
                     key, n = f"{base}-{n}", n + 1
                 used.add(key)
-                entries.append(JobEntry(key, job_dir, meta, snippet))
+                entries.append(JobEntry(key, job_dir, meta, snippet, view))
             entries.sort(key=lambda e: (e.created_at, e.key), reverse=True)
             self._by_key = {e.key: e for e in entries}
             return entries

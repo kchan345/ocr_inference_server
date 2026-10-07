@@ -18,7 +18,8 @@ client ──POST /v1/ocr──▶ inference server ──batch / ≤30 parallel
 * `src/ocr_server` – FastAPI inference server (job queue, batching, artifact store, zip download).
 * `src/ocr_server/handlers` – model-specific request/response handling. `ovisocr2.py` is the OvisOCR2
   implementation; add new handlers for other OCR models.
-* `src/ocr_viewer` – local web app (paged job list, side-by-side image / markdown view).
+* `src/ocr_viewer` – local web app (paged job list, side-by-side image / markdown view, image import with
+  boxed-region OCR submission to a configurable server).
 * `mock_vllm` – mocked vLLM endpoint returning a real OvisOCR2 response, used by tests and CI.
 * `scripts/ocr_client.py` – reference client; `scripts/e2e_submit.py` – CI end-to-end driver.
 * `e2e/` – Playwright browser tests for the viewer.
@@ -255,6 +256,59 @@ ocr-viewer downloads/ /other/artifacts/ --port 8765 --open
     rendered figure highlights and centers its region on the page image.
 * Markdown is rendered server-side with `markdown-it-py` and sanitized with `nh3`.
 
+### Submitting new images from the viewer
+
+```bash
+ocr-viewer downloads/ --server-url http://ocr-host:8080 --inbox ./ocr-submissions --port 8765 --open
+```
+
+The **New OCR** tab (`#/new`) lets you send images to an inference server:
+
+* **Server URL** – prefilled from `--server-url` (or `OCR_SERVER_URL`), editable in the page (remembered in the
+  browser's localStorage, *Reset* restores the default). *Check* calls `GET {url}/v1/info` through the viewer and
+  shows the handler, pixel limit and queue state.
+* **Import images** – file picker or drag & drop; several images can be queued, each with its own box.
+* **Boxed region** – drag on the image to draw a box (in original pixel coordinates); only that region is sent
+  for OCR. *Clear box* sends the whole image. A warning is shown when the region exceeds the server's
+  `max_pixels`; the viewer never downsamples – the server's 413 is shown as-is.
+* **Keep for viewing** – `original` (default): the full original image is kept and the OCR region is drawn as
+  a dashed frame on it; region images (`bbox_….jpg`) are cropped from the original at the right offset.
+  `cropped`: only the cropped image is kept (exactly what the model saw). Without a box both are the same.
+
+How it works: the browser uploads to the viewer backend (`POST /api/submissions`), which crops losslessly
+(PNG) with Pillow, POSTs to `{server}/v1/ocr`, and follows the job in the background (`GET /v1/jobs/{id}`;
+transient connection errors are retried with backoff). When the job finishes (succeeded or failed) the zip is
+downloaded, validated (all entries must be under `{job_id}/`) and extracted to `{inbox}/{job_id}/`; the inbox is
+also a viewer root, so the job appears in the job list. Pending submissions are stored in
+`{inbox}/.submissions/{job_id}.json` and resumed after a viewer restart.
+
+The viewer writes `viewer.json` into each imported job folder:
+
+```json
+{
+  "schema_version": 1, "source": "ocr-viewer", "server_url": "http://ocr-host:8080",
+  "submitted_at": "2025-01-01T00:00:00+00:00", "original_filename": "scan.png",
+  "persisted_image": "original", "image": "original.png",
+  "crop": {"box": [50, 55, 800, 1045], "source_width": 1000, "source_height": 1100},
+  "region_frame": [50, 55, 800, 1045]
+}
+```
+
+With `persisted_image: "original"` and a crop, `input.*` (the cropped upload) is replaced by `original.<ext>`;
+`job.json` from the server is left untouched and still describes the cropped input. `region_frame` is the
+offset/size used to map the model's 0–1000 coordinates (relative to the crop) onto the original image.
+`--inbox` defaults to `./ocr-submissions`; submission is disabled (404 `submissions_disabled`) when the app is
+created without an inbox.
+
+Submission API (viewer): `GET /api/config`, `GET /api/server/info?url=`, `POST /api/submissions`
+(multipart: `image`, optional `server_url`, `prompt`, `box="x1,y1,x2,y2"` in original pixels,
+`persist=original|cropped`; → 202 with the submission record), `GET /api/submissions`,
+`GET /api/submissions/{job_id}`. Errors use the server's envelope (`{"error": {"code", "message", …}}`):
+viewer-side `invalid_image`, `empty_image`, `invalid_box`, `invalid_persist`, `server_url_required`,
+`invalid_server_url` (400), `file_too_large` (413), `server_unreachable` / `invalid_server_response` (502),
+`submission_not_found` (404); errors from the inference server keep their status
+(400/413/415/422/503, others → 502) and code, with `source: "inference_server"` and `Retry-After` when present.
+
 Viewer API: `GET /api/jobs?page&page_size&status&q`, `GET /api/jobs/{key}`, `GET /api/jobs/{key}/image`,
 `GET /api/jobs/{key}/images/{bbox_name}`, `POST /api/render`, `PUT|DELETE /api/jobs/{key}/markdown`,
 `GET /api/roots`.
@@ -277,6 +331,8 @@ response captured from the live server (`mock_vllm/fixtures`). Test hooks: promp
   buffer limits, viewer API, server→zip→viewer integration), all against the in-process mock.
 * **e2e** – starts mock vLLM, the server and the viewer as real processes; `scripts/e2e_submit.py` submits
   jobs (including failure, oversized and invalid images), verifies the deflate zips and extracts them; Playwright
-  tests drive the viewer (paging, side-by-side render, region crops, zoom/pan, edit/save/revert). Screenshots,
+  tests drive the viewer (paging, side-by-side render, region crops, zoom/pan, edit/save/revert). A second viewer
+  (`--server-url` pointing at the real server) is driven through *New OCR*: custom server URL, image import,
+  boxed region with original vs. cropped image kept, whole-image submission. Screenshots,
   logs and artifacts are uploaded as the `e2e-output` workflow artifact.
 * **build** – sdist/wheel (uploaded as `dist`), wheel install smoke test, Docker image build and smoke run.

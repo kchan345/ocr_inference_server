@@ -62,11 +62,20 @@
   function jobHash(key) { return "#/job/" + encodeURIComponent(key); }
 
   // ------------------------------------------------------------------ routing
+  function showSection(id) {
+    for (const s of ["list-view", "job-view", "new-view"]) $(s).hidden = s !== id;
+    $("nav-jobs").classList.toggle("active", id !== "new-view");
+    $("nav-new").classList.toggle("active", id === "new-view");
+    if (id !== "new-view") stopSubmissionPolling();
+  }
+
   async function route() {
     const { path, params } = parseHash();
     const m = path.match(/^\/job\/(.+)$/);
     if (m) {
       await showJob(decodeURIComponent(m[1]));
+    } else if (path === "/new") {
+      await showNew();
     } else {
       state.list.page = Math.max(1, parseInt(params.get("page"), 10) || 1);
       state.list.size = parseInt(params.get("size"), 10) || state.list.size;
@@ -106,8 +115,7 @@
   }
 
   async function showList() {
-    $("job-view").hidden = true;
-    $("list-view").hidden = false;
+    showSection("list-view");
     $("status-filter").value = state.list.status;
     $("search").value = state.list.q;
     if (![...$("page-size").options].some((o) => o.value === String(state.list.size))) {
@@ -283,38 +291,59 @@
     return seen;
   }
 
+  // Region coordinates are normalized to the image that was OCR'd. When the original (uncropped) image is kept,
+  // that image is the crop `region_frame` inside the displayed picture.
+  function regionGeometry() {
+    const job = state.job || {};
+    const W = job.width || viewer.natW || 1;
+    const H = job.height || viewer.natH || 1;
+    const [fx, fy, fx2, fy2] = job.region_frame || [0, 0, W, H];
+    return { W, H, fx, fy, fw: fx2 - fx, fh: fy2 - fy, scale: job.bbox_scale || 1000 };
+  }
+
   function drawRegions(markdown) {
     const overlay = $("overlay");
-    const scale = (state.job && state.job.bbox_scale) || 1000;
+    const g = regionGeometry();
     const nodes = [];
+    if (state.job && state.job.region_frame) {
+      const frame = el("div", { class: "crop-frame", title: "Region sent for OCR" });
+      frame.style.left = (g.fx / g.W) * 100 + "%";
+      frame.style.top = (g.fy / g.H) * 100 + "%";
+      frame.style.width = (g.fw / g.W) * 100 + "%";
+      frame.style.height = (g.fh / g.H) * 100 + "%";
+      nodes.push(frame);
+    }
     for (const [name, [l, t, r, b]] of parseRegions(markdown)) {
       const box = el("div", { class: "region", title: name, dataset: { name } });
-      box.style.left = (l / scale) * 100 + "%";
-      box.style.top = (t / scale) * 100 + "%";
-      box.style.width = (Math.max(0, r - l) / scale) * 100 + "%";
-      box.style.height = (Math.max(0, b - t) / scale) * 100 + "%";
+      box.style.left = ((g.fx + (l / g.scale) * g.fw) / g.W) * 100 + "%";
+      box.style.top = ((g.fy + (t / g.scale) * g.fh) / g.H) * 100 + "%";
+      box.style.width = ((Math.max(0, r - l) / g.scale) * g.fw / g.W) * 100 + "%";
+      box.style.height = ((Math.max(0, b - t) / g.scale) * g.fh / g.H) * 100 + "%";
       nodes.push(box);
     }
     overlay.replaceChildren(...nodes);
   }
 
   function highlightRegion(name) {
-    const scale = (state.job && state.job.bbox_scale) || 1000;
-    for (const node of $("overlay").children) node.classList.toggle("active", node.dataset.name === name);
+    const g = regionGeometry();
+    for (const node of $("overlay").querySelectorAll(".region")) {
+      node.classList.toggle("active", node.dataset.name === name);
+    }
     for (const img of $("rendered").querySelectorAll("img")) {
       img.classList.toggle("active", (img.getAttribute("src") || "").endsWith("/" + name));
     }
     const coords = parseRegions("images/" + name).get(name);
     if (coords && viewer.natW) {
       const [l, t, r, b] = coords;
-      viewer.centerOn(((l + r) / 2 / scale) * viewer.natW, ((t + b) / 2 / scale) * viewer.natH);
+      const px = g.fx + ((l + r) / 2 / g.scale) * g.fw;
+      const py = g.fy + ((t + b) / 2 / g.scale) * g.fh;
+      viewer.centerOn((px / g.W) * viewer.natW, (py / g.H) * viewer.natH);
     }
   }
 
   // ------------------------------------------------------------------ job view
   async function showJob(key) {
-    $("list-view").hidden = true;
-    $("job-view").hidden = false;
+    showSection("job-view");
     const job = await api("/api/jobs/" + encodeURIComponent(key));
     state.job = job;
     state.savedMarkdown = job.markdown;
@@ -323,8 +352,11 @@
     $("job-title").textContent = job.job_id;
     $("job-status").textContent = job.status;
     $("job-status").className = "badge " + job.status;
-    $("job-file").textContent = [job.original_filename, job.width && `${job.width}×${job.height}`]
-      .filter(Boolean).join(" · ");
+    $("job-file").textContent = [
+      job.original_filename,
+      job.width && `${job.width}×${job.height}`,
+      job.crop && `OCR region ${job.crop.box.join(",")} · kept ${job.persisted_image} image`,
+    ].filter(Boolean).join(" · ");
     document.title = `${job.job_id} – OCR Artifact Viewer`;
 
     const messages = [];
@@ -465,12 +497,284 @@
     }
   }
 
+  // ------------------------------------------------------------------ new OCR submissions
+  const SERVER_KEY = "ocrViewer.serverUrl";
+  const sub = { config: null, items: [], selected: -1, nextId: 1, info: null, timer: null, drag: null };
+
+  function serverUrl() { return $("server-url").value.trim(); }
+
+  async function checkServer() {
+    const status = $("server-status");
+    status.textContent = "Checking…";
+    status.className = "muted";
+    try {
+      const { info, server_url } = await api("/api/server/info?url=" + encodeURIComponent(serverUrl()));
+      sub.info = info;
+      const q = info.queue || {};
+      status.textContent = `Connected to ${server_url} · ${info.handler.display_name || info.handler.name}` +
+        ` · max ${info.limits.max_pixels.toLocaleString()} px · buffer ${q.buffered}/${q.max_buffer}` +
+        ` · active ${q.active}/${q.max_concurrency}`;
+      status.className = "ok";
+    } catch (err) {
+      sub.info = null;
+      status.textContent = "Not reachable: " + err.message;
+      status.className = "error-text";
+    }
+    updateCropInfo();
+  }
+
+  function addFiles(files) {
+    for (const file of files) {
+      const item = { id: sub.nextId++, file, url: URL.createObjectURL(file), box: null, natW: 0, natH: 0, error: "" };
+      sub.items.push(item);
+      const probe = new Image();
+      probe.onload = () => {
+        item.natW = probe.naturalWidth;
+        item.natH = probe.naturalHeight;
+        renderImportList();
+        if (item === currentItem()) { drawCropBox(); updateCropInfo(); }
+      };
+      probe.onerror = () => { item.error = "Preview not supported by the browser (can still be sent whole)"; renderImportList(); };
+      probe.src = item.url;
+    }
+    if (sub.selected < 0 && sub.items.length) sub.selected = 0;
+    renderImportList();
+    selectItem(sub.selected);
+  }
+
+  function boxLabel(item) {
+    if (!item.box) return "whole image";
+    const [x1, y1, x2, y2] = item.box;
+    return `box ${x2 - x1}×${y2 - y1}`;
+  }
+
+  function renderImportList() {
+    $("import-list").replaceChildren(...sub.items.map((item, idx) => {
+      const remove = el("button", { type: "button", class: "remove", title: "Remove", textContent: "×" });
+      remove.addEventListener("click", (e) => { e.stopPropagation(); removeItem(idx); });
+      const li = el("li", { class: idx === sub.selected ? "selected" : "", dataset: { id: item.id } },
+        el("span", { class: "name", title: item.file.name }, item.file.name),
+        el("span", { class: "muted small" }, item.natW ? `${item.natW}×${item.natH} · ${boxLabel(item)}` : ""),
+        remove);
+      if (item.error) li.append(el("div", { class: "err" }, item.error));
+      li.addEventListener("click", () => selectItem(idx));
+      return li;
+    }));
+    $("submit-ocr").disabled = sub.items.length === 0;
+  }
+
+  function removeItem(idx) {
+    URL.revokeObjectURL(sub.items[idx].url);
+    sub.items.splice(idx, 1);
+    if (sub.selected >= sub.items.length) sub.selected = sub.items.length - 1;
+    renderImportList();
+    selectItem(sub.selected);
+  }
+
+  function currentItem() { return sub.items[sub.selected] || null; }
+
+  function selectItem(idx) {
+    sub.selected = idx;
+    const item = currentItem();
+    $("crop-stage").hidden = !item;
+    $("crop-name").textContent = item ? item.file.name : "No image selected";
+    if (item && $("crop-image").getAttribute("src") !== item.url) $("crop-image").src = item.url;
+    for (const li of $("import-list").children) li.classList.toggle("selected", Number(li.dataset.id) === (item && item.id));
+    drawCropBox();
+    updateCropInfo();
+  }
+
+  function drawCropBox() {
+    const item = currentItem();
+    const box = $("crop-box");
+    $("crop-clear").disabled = !(item && item.box);
+    if (!item || !item.box || !item.natW) { box.hidden = true; return; }
+    const [x1, y1, x2, y2] = item.box;
+    box.hidden = false;
+    box.style.left = (x1 / item.natW) * 100 + "%";
+    box.style.top = (y1 / item.natH) * 100 + "%";
+    box.style.width = ((x2 - x1) / item.natW) * 100 + "%";
+    box.style.height = ((y2 - y1) / item.natH) * 100 + "%";
+  }
+
+  function updateCropInfo() {
+    const item = currentItem();
+    const warn = $("crop-warning");
+    warn.hidden = true;
+    if (!item) { $("crop-info").textContent = ""; return; }
+    let w = item.natW, h = item.natH;
+    if (item.box) {
+      const [x1, y1, x2, y2] = item.box;
+      w = x2 - x1; h = y2 - y1;
+      $("crop-info").textContent = `Box ${x1},${y1} → ${x2},${y2} (${w}×${h} px)`;
+    } else {
+      $("crop-info").textContent = "No box: the whole image is sent";
+    }
+    const max = sub.info && sub.info.limits && sub.info.limits.max_pixels;
+    if (max && w * h > max) {
+      warn.hidden = false;
+      warn.textContent = `${w}×${h} = ${(w * h).toLocaleString()} px exceeds the server limit of ` +
+        `${max.toLocaleString()} px; the server will reject it. Draw a smaller box or downscale the image.`;
+    }
+  }
+
+  function pointToImage(e) {
+    const item = currentItem();
+    const r = $("crop-image").getBoundingClientRect();
+    const x = Math.min(Math.max(e.clientX - r.left, 0), r.width);
+    const y = Math.min(Math.max(e.clientY - r.top, 0), r.height);
+    return [Math.round((x / r.width) * item.natW), Math.round((y / r.height) * item.natH)];
+  }
+
+  function bindCropper() {
+    const stage = $("crop-stage");
+    stage.addEventListener("pointerdown", (e) => {
+      const item = currentItem();
+      if (e.button !== 0 || !item || !item.natW) return;
+      e.preventDefault();
+      sub.drag = { start: pointToImage(e), id: e.pointerId };
+      stage.setPointerCapture(e.pointerId);
+    });
+    stage.addEventListener("pointermove", (e) => {
+      if (!sub.drag || e.pointerId !== sub.drag.id) return;
+      const [ax, ay] = sub.drag.start;
+      const [bx, by] = pointToImage(e);
+      currentItem().box = [Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)];
+      drawCropBox();
+      updateCropInfo();
+    });
+    const end = (e) => {
+      if (!sub.drag || e.pointerId !== sub.drag.id) return;
+      sub.drag = null;
+      const item = currentItem();
+      if (item.box && (item.box[2] - item.box[0] < 4 || item.box[3] - item.box[1] < 4)) item.box = null;
+      drawCropBox();
+      updateCropInfo();
+      renderImportList();
+    };
+    stage.addEventListener("pointerup", end);
+    stage.addEventListener("pointercancel", end);
+    $("crop-clear").onclick = () => {
+      const item = currentItem();
+      if (item) item.box = null;
+      drawCropBox();
+      updateCropInfo();
+      renderImportList();
+    };
+    $("import-files").addEventListener("change", (e) => { addFiles([...e.target.files]); e.target.value = ""; });
+    const drop = $("drop-zone");
+    drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+    drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+    drop.addEventListener("drop", (e) => {
+      e.preventDefault();
+      drop.classList.remove("over");
+      addFiles([...e.dataTransfer.files].filter((f) => f.type.startsWith("image/") || /\.tiff?$/i.test(f.name)));
+    });
+    $("server-url").addEventListener("change", () => {
+      localStorage.setItem(SERVER_KEY, serverUrl());
+      checkServer();
+    });
+    $("server-check").onclick = () => checkServer();
+    $("server-reset").onclick = () => {
+      localStorage.removeItem(SERVER_KEY);
+      $("server-url").value = (sub.config && sub.config.server_url) || "";
+      checkServer();
+    };
+    $("submit-ocr").onclick = () => submitAll().catch(showFatal);
+  }
+
+  async function submitAll() {
+    const persist = document.querySelector("input[name=persist]:checked").value;
+    const prompt = $("ocr-prompt").value;
+    const messages = [];
+    $("submit-ocr").disabled = true;
+    const remaining = [];
+    for (const item of [...sub.items]) {
+      const form = new FormData();
+      form.append("image", item.file, item.file.name);
+      form.append("server_url", serverUrl());
+      form.append("persist", persist);
+      if (prompt.trim()) form.append("prompt", prompt);
+      if (item.box) form.append("box", item.box.join(","));
+      try {
+        const rec = await api("/api/submissions", { method: "POST", body: form });
+        messages.push(el("div", { class: "message ok" }, `${item.file.name}: job ${rec.job_id} accepted`));
+        URL.revokeObjectURL(item.url);
+      } catch (err) {
+        item.error = err.message;
+        remaining.push(item);
+        messages.push(el("div", { class: "message error" }, `${item.file.name}: ${err.message}`));
+      }
+    }
+    sub.items = remaining;
+    sub.selected = remaining.length ? 0 : -1;
+    renderImportList();
+    selectItem(sub.selected);
+    $("submit-messages").replaceChildren(...messages);
+    await refreshSubmissions();
+  }
+
+  function submissionStatus(rec) {
+    if (rec.state === "error") return ["failed", "error"];
+    if (rec.state === "imported") return [rec.job_status, rec.job_status];
+    return [rec.job_status || "queued", rec.last_error ? "waiting for server" : rec.job_status || "queued"];
+  }
+
+  async function refreshSubmissions() {
+    const { items } = await api("/api/submissions");
+    $("submission-rows").replaceChildren(...items.map((rec) => {
+      const [cls, label] = submissionStatus(rec);
+      const status = el("td", {}, el("span", { class: `badge ${cls}` }, label));
+      if (rec.error || rec.last_error) status.append(el("div", { class: "muted small" }, rec.error || rec.last_error));
+      const open = rec.key
+        ? el("a", { href: jobHash(rec.key), class: "open-job" }, "Open")
+        : el("span", { class: "muted" }, rec.state === "error" ? "" : "pending…");
+      return el("tr", { dataset: { jobId: rec.job_id, state: rec.state } },
+        el("td", {}, fmtDate(rec.submitted_at)),
+        el("td", {}, rec.original_filename),
+        el("td", { title: rec.server_url }, el("code", {}, rec.job_id)),
+        el("td", {}, rec.crop ? rec.crop.box.join(",") : "whole image"),
+        el("td", {}, rec.crop ? rec.persist : "original"),
+        status,
+        el("td", {}, open));
+    }));
+    return items;
+  }
+
+  function stopSubmissionPolling() {
+    clearTimeout(sub.timer);
+    sub.timer = null;
+  }
+
+  async function pollSubmissions() {
+    stopSubmissionPolling();
+    const items = await refreshSubmissions().catch(() => []);
+    if ($("new-view").hidden) return;
+    const busy = items.some((r) => r.state === "submitted");
+    sub.timer = setTimeout(pollSubmissions, busy ? 1000 : 5000);
+  }
+
+  async function showNew() {
+    showSection("new-view");
+    document.title = "New OCR – OCR Artifact Viewer";
+    if (!$("server-url").value) {
+      $("server-url").value = localStorage.getItem(SERVER_KEY) || (sub.config && sub.config.server_url) || "";
+    }
+    $("inbox-info").textContent = sub.config && sub.config.inbox ? `Results are saved to ${sub.config.inbox}` : "";
+    if ($("server-url").value) checkServer();
+    else $("server-status").textContent = "Enter the inference server URL";
+    await pollSubmissions();
+  }
+
   // ------------------------------------------------------------------ boot
   async function boot() {
     bindListControls();
     bindViewer();
     bindJobControls();
+    bindCropper();
     api("/api/roots").then((r) => { $("roots").textContent = r.roots.join(" · "); }).catch(() => {});
+    sub.config = await api("/api/config").catch(() => ({ submissions_enabled: false }));
+    $("nav-new").hidden = !sub.config.submissions_enabled;
     await route();
   }
 
